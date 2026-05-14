@@ -1,110 +1,208 @@
 #!/bin/bash
 
 # ==============================================================================
-# Script Perbantuan Instalasi Wazuh All-in-One (AIO) - Safe CRLF Edition
-# Dirancang untuk setup lokal di VirtualBox (Ubuntu/Debian & Rocky/RHEL)
+# Script Instalasi Wazuh All-in-One (AIO)
+# Untuk Ubuntu Server di VirtualBox
+# Tested: Ubuntu 22.04 / 24.04
 # ==============================================================================
 
-# Warna untuk output terminal agar mudah dibaca
+# =========================
+# WARNA TERMINAL
+# =========================
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# ------------------------------------------------------------------------------
-# AUTO-CLEANER: Mengatasi error '\r': command not found akibat format Windows (CRLF)
-# ------------------------------------------------------------------------------
-if echo "$0" | grep -q "\.sh"; then
-    if grep -q $'\r' "$0"; then
-        echo -e "${YELLOW}[INFO] Mendeteksi format Windows (CRLF). Melakukan konversi otomatis ke Linux (LF)...${NC}"
-        sed -i 's/\r$//' "$0"
-        echo -e "${GREEN}[OK] Konversi berhasil. Menjalankan ulang script dengan format yang benar...${NC}\n"
-        exec bash "$0" "$@"
-    fi
-fi
+# =========================
+# HEADER
+# =========================
+echo -e "${CYAN}"
+echo "========================================================"
+echo "      WAZUH ALL-IN-ONE INSTALLER (LOCAL LAB)"
+echo "========================================================"
+echo -e "${NC}"
 
-echo -e "${CYAN}========================================================"
-echo -e "   Memulai Script Instalasi Wazuh All-in-One Lokal"
-echo -e "========================================================${NC}"
-
-# 1. Validasi Akses Root
+# =========================
+# VALIDASI ROOT
+# =========================
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}[ERROR] Harap jalankan script ini sebagai root (gunakan sudo bash).${NC}"
+  echo -e "${RED}[ERROR] Jalankan script sebagai root.${NC}"
+  echo -e "${YELLOW}Contoh:${NC} sudo bash install-wazuh.sh"
   exit 1
 fi
 
-# 2. Konfigurasi Kernel untuk OpenSearch (vm.max_map_count)
-echo -e "\n${YELLOW}[1/4] Mengonfigurasi virtual memory kernel (vm.max_map_count)...${NC}"
-CURRENT_MAX_MAP=$(sysctl -n vm.max_map_count 2>/dev/null)
+# =========================
+# CEK RAM
+# =========================
+TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
 
-if [ "$CURRENT_MAX_MAP" != "262144" ]; then
-    sysctl -w vm.max_map_count=262144
-    
-    # Memastikan tidak ada double entry konfigurasi di sysctl.conf
-    sed -i '/vm.max_map_count/d' /etc/sysctl.conf
-    echo "vm.max_map_count=262144" >> /etc/sysctl.conf
-    echo -e "${GREEN}[OK] vm.max_map_count berhasil diatur menjadi 262144 secara permanen.${NC}"
+echo -e "${YELLOW}[1/8] Mengecek RAM sistem...${NC}"
+
+if [ "$TOTAL_RAM" -lt 6000 ]; then
+    echo -e "${RED}[WARNING] RAM kurang dari 6GB.${NC}"
+    echo -e "${RED}OpenSearch/Wazuh kemungkinan gagal atau lambat.${NC}"
+    echo -e "${YELLOW}Disarankan minimal 8GB RAM VM.${NC}"
+    sleep 5
 else
-    echo -e "${GREEN}[OK] vm.max_map_count sudah sesuai (262144). Skipping.${NC}"
+    echo -e "${GREEN}[OK] RAM mencukupi (${TOTAL_RAM} MB).${NC}"
 fi
 
-# 3. Deteksi Package Manager dan Update Repositori
-echo -e "\n${YELLOW}[2/4] Memperbarui repositori sistem...${NC}"
-if [ -x "$(command -v apt)" ]; then
-    echo -e "${CYAN}Mendeteksi distro berbasis Debian/Ubuntu. Menjalankan apt update...${NC}"
-    apt update -y
-elif [ -x "$(command -v dnf)" ]; then
-    echo -e "${CYAN}Mendeteksi distro berbasis RHEL/Rocky Linux. Menjalankan dnf check-update...${NC}"
-    dnf check-update -y
+# =========================
+# FIX CDROM REPOSITORY
+# =========================
+echo -e "\n${YELLOW}[2/8] Membersihkan repository CD-ROM Ubuntu...${NC}"
+
+if grep -q "cdrom" /etc/apt/sources.list 2>/dev/null; then
+    sed -i '/cdrom/d' /etc/apt/sources.list
+    echo -e "${GREEN}[OK] Repository CD-ROM berhasil dihapus.${NC}"
 else
-    echo -e "${YELLOW}[WARNING] Package manager tidak dikenali (bukan apt/dnf). Mencoba melanjutkan...${NC}"
+    echo -e "${GREEN}[OK] Tidak ada repository CD-ROM.${NC}"
 fi
 
-# 4. Unduh dan Jalankan Script Resmi Wazuh Installation Assistant
-echo -e "\n${YELLOW}[3/4] Mengunduh dan mengeksekusi Wazuh Installation Assistant...${NC}"
-echo -e "${CYAN}Proses ini akan memakan waktu 5-15 menit tergantung spesifikasi VM dan internet.${NC}"
+# =========================
+# UPDATE SYSTEM
+# =========================
+echo -e "\n${YELLOW}[3/8] Update repository sistem...${NC}"
 
-# Hapus file instalasi lama jika ada untuk mencegah konflik
-if [ -f "wazuh-install.sh" ]; then
-    rm -f wazuh-install.sh
-fi
+apt clean
+apt update --fix-missing -y
 
-curl -sO https://packages.wazuh.com/4.x/wazuh-install.sh
-
-if [ ! -f "wazuh-install.sh" ]; then
-    echo -e "${RED}[ERROR] Gagal mengunduh wazuh-install.sh. Periksa koneksi internet VM Anda.${NC}"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}[ERROR] apt update gagal.${NC}"
     exit 1
 fi
 
-# Eksekusi instalasi otomatis All-in-One (-a)
+# =========================
+# INSTALL DEPENDENCIES
+# =========================
+echo -e "\n${YELLOW}[4/8] Install dependency dasar...${NC}"
+
+apt install -y \
+    curl \
+    unzip \
+    tar \
+    wget \
+    gnupg \
+    apt-transport-https \
+    software-properties-common \
+    dos2unix
+
+# =========================
+# CONFIG KERNEL
+# =========================
+echo -e "\n${YELLOW}[5/8] Konfigurasi vm.max_map_count...${NC}"
+
+CURRENT_MAX_MAP=$(sysctl -n vm.max_map_count 2>/dev/null)
+
+if [ "$CURRENT_MAX_MAP" != "262144" ]; then
+
+    sysctl -w vm.max_map_count=262144
+
+    sed -i '/vm.max_map_count/d' /etc/sysctl.conf
+    echo "vm.max_map_count=262144" >> /etc/sysctl.conf
+
+    echo -e "${GREEN}[OK] vm.max_map_count berhasil diatur.${NC}"
+
+else
+    echo -e "${GREEN}[OK] vm.max_map_count sudah sesuai.${NC}"
+fi
+
+# =========================
+# DOWNLOAD WAZUH INSTALLER
+# =========================
+echo -e "\n${YELLOW}[6/8] Mengunduh Wazuh installer resmi...${NC}"
+
+cd /root || exit 1
+
+rm -f wazuh-install.sh
+
+curl -fsSL -o wazuh-install.sh \
+https://packages.wazuh.com/4.x/wazuh-install.sh
+
+# =========================
+# VALIDASI DOWNLOAD
+# =========================
+if [ ! -f wazuh-install.sh ]; then
+    echo -e "${RED}[ERROR] File installer gagal diunduh.${NC}"
+    exit 1
+fi
+
+# FIX CRLF
+dos2unix wazuh-install.sh >/dev/null 2>&1
+
+# VALIDASI FILE
+FIRST_LINE=$(head -n 1 wazuh-install.sh)
+
+if ! echo "$FIRST_LINE" | grep -q "bash"; then
+    echo -e "${RED}[ERROR] File hasil download bukan bash script.${NC}"
+    echo -e "${YELLOW}Isi awal file:${NC}"
+    head wazuh-install.sh
+    exit 1
+fi
+
+chmod +x wazuh-install.sh
+
+echo -e "${GREEN}[OK] Installer berhasil diverifikasi.${NC}"
+
+# =========================
+# JALANKAN INSTALLER
+# =========================
+echo -e "\n${YELLOW}[7/8] Menjalankan instalasi Wazuh All-in-One...${NC}"
+echo -e "${CYAN}Proses ini bisa memakan waktu 10-30 menit.${NC}"
+
 bash wazuh-install.sh -a
 
-# 5. Output Informasi Kredensial setelah instalasi selesai
-echo -e "\n${YELLOW}[4/4] Memeriksa hasil instalasi...${NC}"
-if [ -f "wazuh-install-files.tar" ]; then
-    echo -e "${GREEN}========================================================"
-    echo -e "        INSTALASI WAZUH ALL-IN-ONE BERHASIL!"
-    echo -e "========================================================${NC}"
-    echo -e "${CYAN}Silakan catat informasi kredensial login di bawah ini:${NC}"
-    echo -e "--------------------------------------------------------"
-    
-    # Ekstrak file wazuh-passwords.txt langsung ke stdout layar terminal
-    tar -axf wazuh-install-files.tar wazuh-install-files/wazuh-passwords.txt -O 2>/dev/null
-    
-    echo -e "--------------------------------------------------------"
-    
-    # Mengambil IP Address lokal utama untuk memudahkan instruksi akses
-    IP_ADDR=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || hostname -I | awk '{print $1}')
-    echo -e "${YELLOW}Akses Web Dashboard via Browser Anda:${NC}"
-    echo -e "${GREEN}URL      : https://${IP_ADDR}${NC}"
-    echo -e "${YELLOW}Username : admin${NC}"
-    echo -e "--------------------------------------------------------"
-    echo -e "${CYAN}Catatan: Jika browser memunculkan peringatan SSL/Sertifikat,${NC}"
-    echo -e "${CYAN}pilih 'Advanced' lalu klik 'Proceed/Lanjutkan' (Self-signed certificate).${NC}"
-    echo -e "========================================================"
+# =========================
+# VALIDASI HASIL INSTALL
+# =========================
+echo -e "\n${YELLOW}[8/8] Memeriksa hasil instalasi...${NC}"
+
+if [ -f "/root/wazuh-install-files.tar" ]; then
+
+    echo -e "${GREEN}"
+    echo "========================================================"
+    echo "          INSTALASI WAZUH BERHASIL!"
+    echo "========================================================"
+    echo -e "${NC}"
+
+    echo -e "${CYAN}Credential login:${NC}"
+    echo "--------------------------------------------------------"
+
+    tar -axf /root/wazuh-install-files.tar \
+    wazuh-install-files/wazuh-passwords.txt -O 2>/dev/null
+
+    echo "--------------------------------------------------------"
+
+    IP_ADDR=$(hostname -I | awk '{print $1}')
+
+    echo -e "${YELLOW}Dashboard URL:${NC}"
+    echo -e "${GREEN}https://${IP_ADDR}${NC}"
+
+    echo ""
+    echo -e "${YELLOW}Jika browser warning SSL:${NC}"
+    echo "Advanced -> Proceed"
+
+    echo ""
+    echo -e "${GREEN}Service status:${NC}"
+
+    systemctl status wazuh-manager --no-pager
+    systemctl status wazuh-dashboard --no-pager
+    systemctl status wazuh-indexer --no-pager
+
 else
-    echo -e "${RED}[ERROR] File wazuh-install-files.tar tidak ditemukan.${NC}"
-    echo -e "${RED}Kemungkinan terjadi kesalahan/interupsi saat script utama berjalan.${NC}"
-    echo -e "${RED}Silakan cek log sistem atau jalankan ulang dengan resource RAM yang lebih besar.${NC}"
+
+    echo -e "${RED}[ERROR] Instalasi kemungkinan gagal.${NC}"
+
+    echo ""
+    echo -e "${YELLOW}Cek service:${NC}"
+
+    systemctl status wazuh-manager --no-pager
+    systemctl status wazuh-dashboard --no-pager
+    systemctl status wazuh-indexer --no-pager
+
+    echo ""
+    echo -e "${YELLOW}Cek log:${NC}"
+    echo "journalctl -xe"
 fi
