@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Script Instalasi Wazuh All-in-One (AIO)
-# Untuk Ubuntu Server di VirtualBox
-# Tested: Ubuntu 22.04 / 24.04
+# WAZUH ALL-IN-ONE AUTO INSTALLER
+# Ubuntu Server 22.04 / 24.04
+# VirtualBox Local Lab Edition
 # ==============================================================================
 
 # =========================
@@ -15,12 +15,11 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# =========================
-# HEADER
-# =========================
+clear
+
 echo -e "${CYAN}"
 echo "========================================================"
-echo "      WAZUH ALL-IN-ONE INSTALLER (LOCAL LAB)"
+echo "         WAZUH AIO INSTALLER - LOCAL LAB"
 echo "========================================================"
 echo -e "${NC}"
 
@@ -28,37 +27,38 @@ echo -e "${NC}"
 # VALIDASI ROOT
 # =========================
 if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}[ERROR] Jalankan script sebagai root.${NC}"
-  echo -e "${YELLOW}Contoh:${NC} sudo bash install-wazuh.sh"
-  exit 1
+    echo -e "${RED}[ERROR] Jalankan script menggunakan sudo/root.${NC}"
+    echo ""
+    echo "Contoh:"
+    echo "sudo bash install-wazuh.sh"
+    exit 1
 fi
 
 # =========================
 # CEK RAM
 # =========================
-TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
+echo -e "${YELLOW}[1/8] Mengecek spesifikasi RAM...${NC}"
 
-echo -e "${YELLOW}[1/8] Mengecek RAM sistem...${NC}"
+TOTAL_RAM=$(free -m | awk '/^Mem:/{print $2}')
 
 if [ "$TOTAL_RAM" -lt 6000 ]; then
     echo -e "${RED}[WARNING] RAM kurang dari 6GB.${NC}"
-    echo -e "${RED}OpenSearch/Wazuh kemungkinan gagal atau lambat.${NC}"
-    echo -e "${YELLOW}Disarankan minimal 8GB RAM VM.${NC}"
+    echo -e "${YELLOW}Disarankan minimal 8GB untuk OpenSearch/Wazuh.${NC}"
     sleep 5
 else
     echo -e "${GREEN}[OK] RAM mencukupi (${TOTAL_RAM} MB).${NC}"
 fi
 
 # =========================
-# FIX CDROM REPOSITORY
+# FIX UBUNTU CDROM REPO
 # =========================
 echo -e "\n${YELLOW}[2/8] Membersihkan repository CD-ROM Ubuntu...${NC}"
 
 if grep -q "cdrom" /etc/apt/sources.list 2>/dev/null; then
     sed -i '/cdrom/d' /etc/apt/sources.list
-    echo -e "${GREEN}[OK] Repository CD-ROM berhasil dihapus.${NC}"
+    echo -e "${GREEN}[OK] Repository CD-ROM dihapus.${NC}"
 else
-    echo -e "${GREEN}[OK] Tidak ada repository CD-ROM.${NC}"
+    echo -e "${GREEN}[OK] Repository CD-ROM tidak ditemukan.${NC}"
 fi
 
 # =========================
@@ -80,17 +80,17 @@ fi
 echo -e "\n${YELLOW}[4/8] Install dependency dasar...${NC}"
 
 apt install -y \
-    curl \
-    unzip \
-    tar \
-    wget \
-    gnupg \
-    apt-transport-https \
-    software-properties-common \
-    dos2unix
+curl \
+wget \
+tar \
+unzip \
+gnupg \
+dos2unix \
+apt-transport-https \
+software-properties-common
 
 # =========================
-# CONFIG KERNEL
+# CONFIG vm.max_map_count
 # =========================
 echo -e "\n${YELLOW}[5/8] Konfigurasi vm.max_map_count...${NC}"
 
@@ -110,7 +110,7 @@ else
 fi
 
 # =========================
-# DOWNLOAD WAZUH INSTALLER
+# DOWNLOAD INSTALLER
 # =========================
 echo -e "\n${YELLOW}[6/8] Mengunduh Wazuh installer resmi...${NC}"
 
@@ -118,8 +118,9 @@ cd /root || exit 1
 
 rm -f wazuh-install.sh
 
-curl -fsSL -o wazuh-install.sh \
-https://packages.wazuh.com/4.x/wazuh-install.sh
+WAZUH_URL="https://packages.wazuh.com/4.7/wazuh-install.sh"
+
+wget -q --show-progress "$WAZUH_URL" -O wazuh-install.sh
 
 # =========================
 # VALIDASI DOWNLOAD
@@ -129,14 +130,22 @@ if [ ! -f wazuh-install.sh ]; then
     exit 1
 fi
 
-# FIX CRLF
+FILE_SIZE=$(stat -c%s wazuh-install.sh)
+
+if [ "$FILE_SIZE" -lt 1000 ]; then
+    echo -e "${RED}[ERROR] Ukuran file installer tidak valid.${NC}"
+    echo -e "${YELLOW}Kemungkinan download gagal / terkena HTML error.${NC}"
+    head wazuh-install.sh
+    exit 1
+fi
+
 dos2unix wazuh-install.sh >/dev/null 2>&1
 
-# VALIDASI FILE
 FIRST_LINE=$(head -n 1 wazuh-install.sh)
 
 if ! echo "$FIRST_LINE" | grep -q "bash"; then
     echo -e "${RED}[ERROR] File hasil download bukan bash script.${NC}"
+    echo ""
     echo -e "${YELLOW}Isi awal file:${NC}"
     head wazuh-install.sh
     exit 1
@@ -150,12 +159,12 @@ echo -e "${GREEN}[OK] Installer berhasil diverifikasi.${NC}"
 # JALANKAN INSTALLER
 # =========================
 echo -e "\n${YELLOW}[7/8] Menjalankan instalasi Wazuh All-in-One...${NC}"
-echo -e "${CYAN}Proses ini bisa memakan waktu 10-30 menit.${NC}"
+echo -e "${CYAN}Proses ini dapat memakan waktu 10-30 menit.${NC}"
 
 bash wazuh-install.sh -a
 
 # =========================
-# VALIDASI HASIL INSTALL
+# CEK HASIL INSTALL
 # =========================
 echo -e "\n${YELLOW}[8/8] Memeriksa hasil instalasi...${NC}"
 
@@ -163,11 +172,11 @@ if [ -f "/root/wazuh-install-files.tar" ]; then
 
     echo -e "${GREEN}"
     echo "========================================================"
-    echo "          INSTALASI WAZUH BERHASIL!"
+    echo "             INSTALASI BERHASIL!"
     echo "========================================================"
     echo -e "${NC}"
 
-    echo -e "${CYAN}Credential login:${NC}"
+    echo -e "${CYAN}Credential Login:${NC}"
     echo "--------------------------------------------------------"
 
     tar -axf /root/wazuh-install-files.tar \
@@ -185,7 +194,7 @@ if [ -f "/root/wazuh-install-files.tar" ]; then
     echo "Advanced -> Proceed"
 
     echo ""
-    echo -e "${GREEN}Service status:${NC}"
+    echo -e "${CYAN}Status Service:${NC}"
 
     systemctl status wazuh-manager --no-pager
     systemctl status wazuh-dashboard --no-pager
@@ -196,13 +205,13 @@ else
     echo -e "${RED}[ERROR] Instalasi kemungkinan gagal.${NC}"
 
     echo ""
-    echo -e "${YELLOW}Cek service:${NC}"
+    echo -e "${YELLOW}Cek service manual:${NC}"
 
     systemctl status wazuh-manager --no-pager
     systemctl status wazuh-dashboard --no-pager
     systemctl status wazuh-indexer --no-pager
 
     echo ""
-    echo -e "${YELLOW}Cek log:${NC}"
+    echo -e "${YELLOW}Cek log error:${NC}"
     echo "journalctl -xe"
 fi
