@@ -120,7 +120,7 @@ rm -f wazuh-install.sh
 
 WAZUH_URL="https://packages.wazuh.com/4.7/wazuh-install.sh"
 
-wget -q --show-progress "$WAZUH_URL" -O wazuh-install.sh
+curl -# -L "$WAZUH_URL" -o wazuh-install.sh
 
 # =========================
 # VALIDASI DOWNLOAD
