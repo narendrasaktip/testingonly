@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Script Perbantuan Instalasi Wazuh All-in-One (AIO)
+# Script Perbantuan Instalasi Wazuh All-in-One (AIO) - Safe CRLF Edition
 # Dirancang untuk setup lokal di VirtualBox (Ubuntu/Debian & Rocky/RHEL)
 # ==============================================================================
 
@@ -11,6 +11,18 @@ CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# ------------------------------------------------------------------------------
+# AUTO-CLEANER: Mengatasi error '\r': command not found akibat format Windows (CRLF)
+# ------------------------------------------------------------------------------
+if echo "$0" | grep -q "\.sh"; then
+    if grep -q $'\r' "$0"; then
+        echo -e "${YELLOW}[INFO] Mendeteksi format Windows (CRLF). Melakukan konversi otomatis ke Linux (LF)...${NC}"
+        sed -i 's/\r$//' "$0"
+        echo -e "${GREEN}[OK] Konversi berhasil. Menjalankan ulang script dengan format yang benar...${NC}\n"
+        exec bash "$0" "$@"
+    fi
+fi
 
 echo -e "${CYAN}========================================================"
 echo -e "   Memulai Script Instalasi Wazuh All-in-One Lokal"
