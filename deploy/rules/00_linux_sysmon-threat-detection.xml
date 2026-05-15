@@ -1,0 +1,411 @@
+<group name="linux,sysmon,threat_detection,">
+
+<rule id="200300" level="12">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)\/dev\/tcp\/|bash -i|nc -e \/bin\/bash|ncat -e \/bin\/bash</field>
+    <description>Linux Sysmon - Suspicious Reverse Shell Attempt Detected</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1571</id>
+    </mitre>
+    <group>sysmon_event1,suspicious_command</group>
+</rule>
+
+<rule id="200301" level="10">
+    <if_sid>200157</if_sid>
+    <field name="eventdata.targetFilename" type="pcre2">(?i)^\/var\/log\/(auth\.log|syslog|messages|secure|audit\/audit\.log|wtmp|lastlog)|(\.bash_history|\.zsh_history|\.sh_history|\.history)$</field>
+    <description>Linux Sysmon - Critical Log or History File Deleted: $(eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1070.003</id>
+      <id>T1070.002</id>
+    </mitre>
+    <group>sysmon_event_23,log_removal</group>
+</rule>
+
+<rule id="200302" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)history -c|shred .*(\/var\/log\/|history)|truncate -s 0 .*(\/var\/log\/|history)</field>
+    <description>Linux Sysmon - Attempt to Clear Command History or Truncate Logs: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1070.003</id>
+      <id>T1485</id>
+    </mitre>
+    <group>sysmon_event1,log_removal</group>
+</rule>
+
+<rule id="200303" level="6">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/(tmp|var\/tmp|dev\/shm)\/</field>
+    <description>Linux Sysmon - Process Executed from Suspicious Directory: $(eventdata.image)</description>
+    <mitre>
+      <id>T1059</id>
+    </mitre>
+    <group>sysmon_event1,suspicious_location</group>
+</rule>
+
+<rule id="200304" level="8">
+    <if_sid>200152</if_sid>
+    <field name="eventdata.image" type="pcre2">(?i)(whoami|id|hostname|uname|pwd|ls|ps)$</field>
+    <description>Linux Sysmon - Suspicious Network Connection from system utility: $(eventdata.image)</description>
+    <mitre>
+      <id>T1033</id>
+      <id>T1049</id>
+    </mitre>
+    <group>sysmon_event3,suspicious_network</group>
+</rule>
+
+<rule id="200305" level="8">
+    <if_sid>200156</if_sid>
+    <description>Linux Sysmon - Configuration Was Changed. Review for unauthorized activity.</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+    <group>sysmon_event_16,config_change</group>
+</rule>
+
+<rule id="200306" level="12">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/usr\/bin\/chmod$</field>
+    <field name="eventdata.commandLine" type="pcre2">(\+s|u\+s|g\+s|[246]...)\s+.*(\/bin\/bash|\/bin\/sh|\/usr\/bin\/python|\/usr\/bin\/perl|\/usr\/bin\/find|\/usr\/bin\/cp|\/usr\/bin\/nmap)$</field>
+    <description>Linux Sysmon - High-Risk SUID/SGID Bit Set on System Binary: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1548.001</id>
+    </mitre>
+    <group>sysmon_event1,privilege_escalation</group>
+  </rule>
+
+  <rule id="200307" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/usr\/bin\/chmod$</field>
+    <field name="eventdata.commandLine" type="pcre2">(\+s|u\+s|4...)\s+(\/tmp\/|\/var\/tmp\/|\/dev\/shm\/)</field>
+    <description>Linux Sysmon - SUID Bit Set on File in Suspicious Directory: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1548.001</id>
+    </mitre>
+    <group>sysmon_event1,privilege_escalation</group>
+  </rule>
+
+  <rule id="200308" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/usr\/bin\/sudo$</field>
+    <field name="eventdata.commandLine" type="pcre2">(?i)find\s+.*\s+(-exec|-ok)\s+(\/bin\/sh|\/bin\/bash)|awk\s+.*(BEGIN\s*\{system\(|system\()|nmap\s+.*(--interactive|!sh)|vim\s+.*(-c\s*:\!sh)|less\s+.*(\!|\!sh)</field>
+    <description>Linux Sysmon - Potential Privilege Escalation via Sudo (GTFOBins): $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1548.003</id>
+    </mitre>
+    <group>sysmon_event1,privilege_escalation</group>
+  </rule>
+
+  <rule id="200309" level="12">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(echo|printf|cat)\s+.*\s+(>>|&>|>)\s+\/etc\/(passwd|shadow)</field>
+    <description>Linux Sysmon - Direct Modification of /etc/passwd or /etc/shadow Detected: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1548.001</id>
+      <id>T1098</id>
+    </mitre>
+    <group>sysmon_event1,privilege_escalation</group>
+  </rule>
+
+<rule id="200310" level="8">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">(tar|zip|7z|gzip|rar)$</field>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(\/etc\/shadow|\/etc\/passwd|\.ssh\/id_rsa|\.bash_history|\/var\/log\/auth\.log|\.aws\/credentials)</field>
+    <description>Linux Sysmon - Sensitive Files Compressed (Potential Exfil Staging): $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1560.001</id>
+    </mitre>
+    <group>sysmon_event1,exfiltration</group>
+  </rule>
+
+  <rule id="200311" level="8">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">(scp|rsync)$</field>
+    <field name="eventdata.commandLine" type="pcre2">\s+.*@.*:</field>
+    <description>Linux Sysmon - Potential Data Exfiltration using $(eventdata.image): $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1048</id>
+    </mitre>
+    <group>sysmon_event1,exfiltration</group>
+  </rule>
+
+  <rule id="200312" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">(curl|wget)$</field>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(pastebin\.com|pastes\.dev|gist\.github\.com|transfer\.sh|paste\.ee|hastebin\.com)</field>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(-d|--data|--upload-file|-T|--method\s+PUT|POST)</field>
+    <description>Linux Sysmon - Data Exfiltration Attempt to Paste Site: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1048</id>
+    </mitre>
+    <group>sysmon_event1,exfiltration</group>
+  </rule>
+
+  <rule id="200313" level="8">
+    <if_sid>200152</if_sid>
+    <field name="eventdata.image" type="pcre2">(\/bin\/id|\/usr\/bin\/whoami|\/bin\/hostname|\/bin\/uname)$</field>
+    <description>Linux Sysmon - System Discovery Tool Made a Network Connection: $(eventdata.image)</description>
+    <mitre>
+      <id>T1048</id>
+    </mitre>
+    <group>sysmon_event3,exfiltration</group>
+  </rule>
+
+<rule id="200314" level="8">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(echo|printf|cat)\s+.*(ssh-rsa|ssh-ed25519)\s*.*\s+(>>|&>|>)\s+.*\.ssh\/authorized_keys</field>
+    <description>Linux Sysmon - New SSH Key Added to authorized_keys: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1098.004</id>
+    </mitre>
+    <group>sysmon_event1,persistence</group>
+  </rule>
+
+  <rule id="200315" level="8">
+    <if_sid>200155</if_sid>
+    <field name="eventdata.targetFilename" type="pcre2">^(\/etc\/systemd\/system\/|\/usr\/lib\/systemd\/system\/|\.config\/systemd\/user\/).*\.service$</field>
+    <description>Linux Sysmon - New systemd Service File Created: $(eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1543.002</id>
+    </mitre>
+    <group>sysmon_event_11,persistence</group>
+  </rule>
+
+  <rule id="200316" level="8">
+    <if_sid>200155</if_sid>
+    <field name="eventdata.targetFilename" type="pcre2">^(\/etc\/cron\.d\/|\/var\/spool\/cron\/crontabs\/|\/etc\/cron\.(hourly|daily|weekly|monthly)\/)</field>
+    <description>Linux Sysmon - New Cron Job File Created: $(eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1053.003</id>
+    </mitre>
+    <group>sysmon_event_11,persistence</group>
+  </rule>
+
+  <rule id="200317" level="12">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)LD_PRELOAD=\s*(\/tmp\/|\/var\/tmp\/|\/dev\/shm\/)</field>
+    <description>Linux Sysmon - Suspicious LD_PRELOAD from tmp directory: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1574.006</id>
+    </mitre>
+    <group>sysmon_event1,persistence,privilege_escalation</group>
+  </rule>
+
+<rule id="200318" level="13">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.parentImage" type="pcre2">(httpd|apache2|nginx|php-fpm|www-data)$</field>
+    <field name="eventdata.image" type="pcre2">(\/bin\/sh|\/bin\/bash|\/usr\/bin\/perl|\/usr\/bin\/python)$</field>
+    <description>Linux Sysmon - Web Server Spawned a Shell (Potential Webshell): $(eventdata.parentImage) -> $(eventdata.image)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>sysmon_event1,webshell</group>
+  </rule>
+
+  <rule id="200319" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.parentImage" type="pcre2">(httpd|apache2|nginx|php-fpm|www-data)$</field>
+    <field name="eventdata.image" type="pcre2">(whoami|id|uname|ifconfig|ip addr|ps aux|wget|curl)$</field>
+    <description>Linux Sysmon - Web Server Ran Recon Command (Potential Webshell): $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059</id>
+    </mitre>
+    <group>sysmon_event1,webshell</group>
+  </rule>
+
+  <rule id="200320" level="10">
+    <if_sid>200155</if_sid>
+    <field name="eventdata.targetFilename" type="pcre2">^(\/var\/www\/|\/srv\/www\/|\/usr\/share\/nginx\/html\/)</field>
+    <field name="eventdata.targetFilename" type="pcre2">(?i)(c99|r57|b374k|php-shell|cmd|aspxspy|webshell)\.(php|asp|aspx|jsp)$</field>
+    <description>Linux Sysmon - Known Webshell File Created in Web Directory: $(eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>sysmon_event_11,webshell</group>
+  </rule>
+
+  <rule id="200321" level="9">
+    <if_sid>200152</if_sid>
+    <field name="eventdata.image" type="pcre2">(httpd|apache2|nginx|php-fpm|www-data)$</field>
+    <field name="eventdata.destinationIp" type="pcre2" negate="yes">^(127\.0\.0\.1|::1)$</field>
+    <field name="eventdata.destinationPort" type="pcre2" negate="yes">^(3306|5432|6379|11211)$</field>
+    <description>Linux Sysmon - Web Server Process Initiated Outgoing Connection: $(eventdata.image) to $(eventdata.destinationIp):$(eventdata.destinationPort)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>sysmon_event3,webshell</group>
+  </rule>
+
+<rule id="200322" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/usr\/bin\/chattr$</field>
+    <field name="eventdata.commandLine" type="pcre2">\s+(-i|-a)\s+</field>
+    <field name="eventdata.commandLine" type="pcre2">(\/var\/log\/|\.bash_history|\/root\/|\/home\/)</field>
+    <description>Linux Sysmon - File Immutability Removed from Sensitive File/Dir: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+    <group>sysmon_event1,defense_evasion</group>
+  </rule>
+
+  <rule id="200323" level="9">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">(tcpdump|tshark|ngrep)$</field>
+    <description>Linux Sysmon - Packet Sniffer Execution Detected: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1040</id>
+    </mitre>
+    <group>sysmon_event1,credential_access</group>
+  </rule>
+
+  <rule id="200324" level="12">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.image" type="pcre2">^\/dev\/shm\/</field>
+    <field name="eventdata.terminal" type="pcre2">(?i)PTY</field>
+    <description>Linux Sysmon - Interactive Execution from In-Memory Filesystem: $(eventdata.image)</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1620</id>
+    </mitre>
+    <group>sysmon_event1,defense_evasion</group>
+  </rule>
+
+  <rule id="200325" level="8">
+    <if_sid>200154</if_sid>
+    <field name="eventdata.image" type="pcre2" negate="yes">^(\/usr\/sbin\/|\/usr\/bin\/|\/sbin\/|\/bin\/)(fdisk|lsblk|smartctl|dd|parted|mount|lsscsi|hdparm|badblocks|file|gparted|lvm|pvscan|vgscan|lvscan|df)$</field>
+    <description>Linux Sysmon - Raw Disk Access from Non-Standard Utility: $(eventdata.image) on $(eventdata.device)</description>
+    <mitre>
+      <id>T1006</id>
+    </mitre>
+    <group>sysmon_event9,credential_access</group>
+  </rule>
+
+  <rule id="200326" level="10">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(curl|wget).*((\/tmp\/|\/var\/tmp\/|\/dev\/shm\/)|(\s*\|\s*(sh|bash|zsh)))</field>
+    <description>Linux Sysmon - Suspicious File Download or "Pipe-to-Shell" (Initial Access)</description>
+    <mitre>
+      <id>T1105</id>
+      <id>T1059.004</id>
+    </mitre>
+    <group>sysmon_event1,initial_access</group>
+  </rule>
+
+  <rule id="200327" level="6">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(ps\s+(aux|faux|-ef))|(ss\s+-tulpn)|(ss\s+-tupln)|(netstat\s+-tulpn)|(lsof\s+-i)|(find\s+.*\s+-perm\s+-[42]000)</field>
+    <description>Linux Sysmon - System Reconnaissance Commands Detected: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1057</id>
+      <id>T1083</id>
+      <id>T1049</id>
+    </mitre>
+    <group>sysmon_event1,discovery</group>
+  </rule>
+
+  <rule id="200328" level="9">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(cat|less|more|head|tail|grep|strings)\s+.*(\/etc\/shadow|\/etc\/gshadow|\/etc\/sudoers|\.ssh\/id_rsa|\.aws\/credentials|\.bash_history)</field>
+    <field name="eventdata.commandLine" type="pcre2" negate="yes">sudo\s+-l</field>
+    <description>Linux Sysmon - Access to Sensitive Credential or Configuration File: $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1003</id>
+      <id>T1555</id>
+    </mitre>
+    <group>sysmon_event1,credential_access</group>
+  </rule>
+
+  <rule id="200329" level="9">
+    <if_sid>200152</if_sid>
+    <field name="eventdata.image" type="pcre2">(\/bin\/sh|\/bin\/bash|curl|wget|ncat|nc|python|perl)$</field>
+    <field name="eventdata.destinationPort" type="pcre2" negate="yes">^(80|443|22|53)$</field>
+    <description>Linux Sysmon - C2: Shell or Utility Connecting on Non-Standard Port: $(eventdata.image) to $(eventdata.destinationIp):$(eventdata.destinationPort)</description>
+    <mitre>
+      <id>T1571</id>
+      <id>T1071.001</id>
+    </mitre>
+    <group>sysmon_event3,c2</group>
+  </rule>
+
+  <rule id="200330" level="13">
+    <if_sid>200155</if_sid>
+    <field name="eventdata.targetFilename" type="pcre2" nocase="yes">\.(enc|locked|crypt|README_TO_DECRYPT|DECRYPT_ME\.txt|wncry|lockbit)$</field>
+    <description>Linux Sysmon - IMPACT: Potential Ransomware Activity. File created with extension: $(eventdata.targetFilename)</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+    <group>sysmon_event_11,impact</group>
+  </rule>
+
+  <rule id="200331" level="15">
+    <if_sid>200151</if_sid>
+    <field name="eventdata.commandLine" type="pcre2">(?i)(shred\s+-f.*\/dev\/(sd|hd|nvme))|(dd\s+if=\/dev\/(zero|urandom)\s+of=\/dev\/(sd|hd|nvme))</field>
+    <description>Linux Sysmon - IMPACT: Destructive Wiper Command Detected! $(eventdata.commandLine)</description>
+    <mitre>
+      <id>T1485</id>
+    </mitre>
+    <group>sysmon_event1,impact</group>
+  </rule>
+
+<rule id="200401" level="14" timeframe="600">
+    <if_matched_sid>200318</if_matched_sid>
+    <if_matched_sid>200308</if_matched_sid>
+    <same_field>system.computer</same_field>
+    <description>linux Sysmon - CORRELATED: Webshell detected, followed by Sudo Privilege Escalation!</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1548.003</id>
+    </mitre>
+    <group>sysmon_correlated,attack_chain</group>
+  </rule>
+
+  <rule id="200402" level="13" timeframe="120">
+    <if_matched_sid>200326</if_matched_sid>
+    <if_matched_sid>200303</if_matched_sid>
+    <same_field>system.computer</same_field>
+    <description>linux Sysmon - CORRELATED: Suspicious Download (curl/wget) immediately followed by Execution from /tmp or /var/tmp.</description>
+    <mitre>
+      <id>T1105</id>
+      <id>T1059</id>
+    </mitre>
+    <group>sysmon_correlated,attack_chain</group>
+  </rule>
+
+  <rule id="200403" level="12" timeframe="300">
+    <if_matched_sid>200327</if_matched_sid>
+    <if_matched_sid>200328</if_matched_sid>
+    <same_field>system.computer</same_field>
+    <description>linux Sysmon - CORRELATED: System Reconnaissance (ps, ss, find) followed by attempt to read sensitive credential files.</description>
+    <mitre>
+      <id>T1057</id>
+      <id>T1003</id>
+    </mitre>
+    <group>sysmon_correlated,attack_chain</group>
+  </rule>
+
+  <rule id="200404" level="14" timeframe="300">
+    <if_matched_sid>200328</if_matched_sid>
+    <if_matched_sid>200312</if_matched_sid>
+    <same_field>system.computer</same_field>
+    <description>linux Sysmon - CORRELATED: Sensitive Credential File Access followed by Data Exfiltration to a paste site!</description>
+    <mitre>
+      <id>T1003</id>
+      <id>T1048</id>
+    </mitre>
+    <group>sysmon_correlated,attack_chain</group>
+  </rule>
+
+  <rule id="200405" level="13" timeframe="120">
+    <if_matched_sid>200322</if_matched_sid>
+    <if_matched_sid>200301</if_matched_sid>
+    <same_field>system.computer</same_field>
+    <description>linux Sysmon - CORRELATED: Attacker removed file immutability (chattr -i) and then immediately deleted a log file.</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1070</id>
+    </mitre>
+    <group>sysmon_correlated,attack_chain</group>
+  </rule>
+
+</group>
