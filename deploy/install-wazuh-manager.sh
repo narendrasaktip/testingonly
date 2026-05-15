@@ -222,7 +222,7 @@ echo -e "\n${YELLOW}[7/11] Menjalankan instalasi Wazuh All-in-One...${NC}"
 echo -e "${CYAN}Proses ini dapat memakan waktu 10-30 menit.${NC}"
 echo -e "${CYAN}Wazuh version: ${WAZUH_VERSION}${NC}"
 
-bash wazuh-install.sh -a || true
+bash wazuh-install.sh -a -i || true
 
 # =========================
 # FIREWALL
