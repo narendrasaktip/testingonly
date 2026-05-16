@@ -82,9 +82,18 @@ fi
 echo -e "${GREEN}[OK] Manager IP: ${WAZUH_MANAGER}${NC}"
 
 # =========================
+# ENVIRONMENT (prevent interactive prompts)
+# =========================
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+if [ -f /etc/needrestart/needrestart.conf ]; then
+    sed -i "s/#\$nrconf{restart} = 'i';/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf 2>/dev/null || true
+fi
+
+# =========================
 # DETECT DISTRO
 # =========================
-echo -e "\n${YELLOW}[1/8] Detect distribusi Linux...${NC}"
+echo -e "\n${YELLOW}[1/9] Detect distribusi Linux...${NC}"
 
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -112,9 +121,49 @@ fi
 echo -e "${GREEN}[OK] Package manager: ${PKG_MGR}${NC}"
 
 # =========================
+# PRE-FLIGHT: APT LOCK & CONNECTIVITY
+# =========================
+echo -e "\n${YELLOW}[2/9] Pre-flight checks...${NC}"
+
+# Free APT lock (apt-based only)
+if [ "$PKG_MGR" = "apt" ]; then
+    systemctl stop unattended-upgrades 2>/dev/null || true
+    killall -9 unattended-upgr 2>/dev/null || true
+    killall -9 apt-get 2>/dev/null || true
+    rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
+    rm -f /var/lib/apt/lists/lock 2>/dev/null || true
+    dpkg --configure -a 2>/dev/null || true
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+        echo -e "${YELLOW}  Waiting for dpkg lock...${NC}"
+        sleep 3
+    done
+    echo -e "${GREEN}[OK] APT lock free.${NC}"
+fi
+
+# Test connectivity to manager
+echo -e "${CYAN}Testing koneksi ke manager ${WAZUH_MANAGER}...${NC}"
+if command -v nc &>/dev/null; then
+    if nc -zv "${WAZUH_MANAGER}" 1514 -w 5 2>/dev/null; then
+        echo -e "${GREEN}[OK] Port 1514 reachable.${NC}"
+    else
+        echo -e "${YELLOW}[WARNING] Port 1514 tidak reachable dari agent ini.${NC}"
+        echo -e "${YELLOW}  Cek: cloud firewall, manager running, IP benar.${NC}"
+        echo -e "${YELLOW}  Agent tetap diinstall — bisa manual register nanti.${NC}"
+    fi
+    if nc -zv "${WAZUH_MANAGER}" 1515 -w 5 2>/dev/null; then
+        echo -e "${GREEN}[OK] Port 1515 reachable (auto-enrollment OK).${NC}"
+    else
+        echo -e "${YELLOW}[WARNING] Port 1515 tidak reachable — auto-enrollment mungkin gagal.${NC}"
+        echo -e "${YELLOW}  Fallback: manual register via manage_agents.${NC}"
+    fi
+else
+    echo -e "${YELLOW}[SKIP] nc tidak tersedia — skip connectivity check.${NC}"
+fi
+
+# =========================
 # INSTALL AUDITD
 # =========================
-echo -e "\n${YELLOW}[2/8] Install auditd...${NC}"
+echo -e "\n${YELLOW}[3/9] Install auditd...${NC}"
 
 if command -v auditctl &>/dev/null; then
     echo -e "${GREEN}[OK] auditd sudah terinstall.${NC}"
@@ -135,7 +184,7 @@ systemctl start auditd 2>/dev/null || true
 # =========================
 # DEPLOY AUDIT.RULES
 # =========================
-echo -e "\n${YELLOW}[3/8] Deploy baseline audit.rules...${NC}"
+echo -e "\n${YELLOW}[4/9] Deploy baseline audit.rules...${NC}"
 
 AUDIT_RULES_SRC="${SCRIPT_DIR}/audit.rules"
 AUDIT_RULES_DST="/etc/audit/rules.d/audit.rules"
@@ -164,7 +213,7 @@ fi
 # =========================
 # INSTALL SYSMON FOR LINUX
 # =========================
-echo -e "\n${YELLOW}[4/8] Install Sysmon for Linux (optional)...${NC}"
+echo -e "\n${YELLOW}[5/9] Install Sysmon for Linux (optional)...${NC}"
 
 if command -v sysmon &>/dev/null; then
     echo -e "${GREEN}[OK] Sysmon sudah terinstall.${NC}"
@@ -213,7 +262,7 @@ fi
 # =========================
 # INSTALL WAZUH AGENT
 # =========================
-echo -e "\n${YELLOW}[5/8] Install Wazuh Agent...${NC}"
+echo -e "\n${YELLOW}[6/9] Install Wazuh Agent...${NC}"
 
 if [ -f /var/ossec/bin/wazuh-control ]; then
     echo -e "${GREEN}[OK] Wazuh agent sudah terinstall.${NC}"
@@ -248,7 +297,7 @@ fi
 # =========================
 # DEPLOY OSSEC.CONF
 # =========================
-echo -e "\n${YELLOW}[6/8] Deploy custom ossec.conf...${NC}"
+echo -e "\n${YELLOW}[7/9] Deploy custom ossec.conf...${NC}"
 
 OSSEC_CONF_SRC="${SCRIPT_DIR}/ossec-agent-linux.conf"
 OSSEC_CONF_DST="/var/ossec/etc/ossec.conf"
@@ -261,6 +310,8 @@ if [ -f "$OSSEC_CONF_SRC" ]; then
     cp "$OSSEC_CONF_SRC" "$OSSEC_CONF_DST"
     sed -i "s|192.168.1.107|${WAZUH_MANAGER}|g" "$OSSEC_CONF_DST"
     sed -i "s|MANAGER_IP|${WAZUH_MANAGER}|g" "$OSSEC_CONF_DST"
+    # Patch enrollment manager_address too
+    sed -i "s|<manager_address>.*</manager_address>|<manager_address>${WAZUH_MANAGER}</manager_address>|g" "$OSSEC_CONF_DST"
 
     chown root:wazuh "$OSSEC_CONF_DST"
     chmod 640 "$OSSEC_CONF_DST"
@@ -277,7 +328,7 @@ fi
 # =========================
 # START AGENT
 # =========================
-echo -e "\n${YELLOW}[7/8] Start Wazuh agent...${NC}"
+echo -e "\n${YELLOW}[8/9] Start Wazuh agent...${NC}"
 
 systemctl daemon-reload
 systemctl enable wazuh-agent
@@ -296,7 +347,7 @@ fi
 # =========================
 # VERIFY
 # =========================
-echo -e "\n${YELLOW}[8/8] Verifikasi...${NC}"
+echo -e "\n${YELLOW}[9/9] Verifikasi...${NC}"
 
 echo ""
 echo -e "${CYAN}Wazuh Agent:${NC}"

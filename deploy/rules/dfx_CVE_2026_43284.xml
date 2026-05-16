@@ -1,0 +1,327 @@
+<group name="dirty_frag,cve_2026_43284,privilege_escalation,custom-rules,">
+
+  <!-- ================================================================== -->
+  <!--                                                                    -->
+  <!--  [CVE-2026-43284] — Dirty Frag: xfrm/ESP Page-Cache Write LPE     -->
+  <!--                                                                    -->
+  <!--  CVSS:    7.8 HIGH  AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H         -->
+  <!--  CWE:     CWE-787   Out-of-bounds Write                           -->
+  <!--  Patch:   2026-05-07 (mainline commit f4c50a4034e6)               -->
+  <!--  Status:  Actively exploited (PoC public, ITW attacks observed)   -->
+  <!--                                                                    -->
+  <!--  [References]                                                      -->
+  <!--    NVD:      https://nvd.nist.gov/vuln/detail/CVE-2026-43284      -->
+  <!--    Advisory: https://access.redhat.com/security/vulnerabilities/RHSB-2026-003 -->
+  <!--    Analysis: https://www.wiz.io/blog/dirty-frag-linux-kernel-local-privilege-escalation-via-esp-and-rxrpc -->
+  <!--    Detection:https://www.sysdig.com/blog/dirty-frag-cve-2026-43284-and-cve-2026-43500 -->
+  <!--    PoC:      https://github.com/V4bel/dirtyfrag                   -->
+  <!--                                                                    -->
+  <!--  [Affected]                                                        -->
+  <!--    Linux kernel (all major distributions)                          -->
+  <!--    Kernels with xfrm/esp4/esp6 module support (2017+)             -->
+  <!--    Architectures: x86_64, ARM64                                    -->
+  <!--                                                                    -->
+  <!--  [MITRE ATT&CK] (ordered by kill chain)                            -->
+  <!--                                                                    -->
+  <!--    [Execution]                                                     -->
+  <!--      T1059.004  Command and Scripting Interpreter: Unix Shell      -->
+  <!--                                                                    -->
+  <!--    [Privilege Escalation]                                          -->
+  <!--      T1068      Exploitation for Privilege Escalation              -->
+  <!--      T1548.001  Abuse Elevation: Setuid and Setgid                -->
+  <!--                                                                    -->
+  <!--    [Persistence]                                                   -->
+  <!--      T1547.006  Boot/Logon: Kernel Modules and Extensions         -->
+  <!--                                                                    -->
+  <!--    [Defense Evasion]                                               -->
+  <!--      T1562.001  Impair Defenses: Disable or Modify Tools          -->
+  <!--                                                                    -->
+  <!--    [Credential Access]                                             -->
+  <!--      T1556.003  Modify Auth Process: Pluggable Auth Modules       -->
+  <!--                                                                    -->
+  <!--  [Kill Chain]                                                      -->
+  <!--    1. Load ESP module (esp4/esp6) via insmod/modprobe              -->
+  <!--    2. Open pipe, vmsplice to attach /usr/bin/su page-cache page   -->
+  <!--    3. Configure XFRM SA, splice pipe into ESP-encap UDP socket    -->
+  <!--    4. Kernel decrypts in-place: SUID binary corrupted in cache    -->
+  <!--    5. Execute corrupted /usr/bin/su -> root shell                 -->
+  <!--                                                                    -->
+  <!--  [Detection Scope]                                                 -->
+  <!--    Preparation:       ESP module load (auditd + syslog)           -->
+  <!--                       AF_ALG crypto socket (auditd)               -->
+  <!--                       Exploit compilation from /tmp (auditd)      -->
+  <!--    Exploitation:      splice_user primitive (auditd)              -->
+  <!--                       memfd_create fileless payload (auditd)      -->
+  <!--    Post-exploitation: SUID binary modified (FIM), /etc/passwd     -->
+  <!--                       modified (FIM), mitigation config tampered  -->
+  <!--    Correlation:       3+ signals in 120s from same host           -->
+  <!--                                                                    -->
+  <!--  Rule IDs:  190800-190812  (13 rules: 11 atomic + 1 context +    -->
+  <!--             1 correlation)                                        -->
+  <!--  Sources:   auditd, syslog, FIM (syscheck)                       -->
+  <!--                                                                    -->
+  <!--  [Dependencies]                                                    -->
+  <!--    Auditd rules (190800-190802, 190807-190812): require deployed  -->
+  <!--      audit.rules baseline with keys: modules, splice_user,       -->
+  <!--      priv_esc, recon, af_alg, anon_file_create                   -->
+  <!--    FIM rules (190803-190805): require syscheck monitoring of      -->
+  <!--      /usr/bin/, /etc/modprobe.d/, /etc/passwd, /etc/shadow        -->
+  <!--    Syslog rule (190806): no dependency (always available)         -->
+  <!--                                                                    -->
+  <!-- ================================================================== -->
+
+  <!-- ============================================================ -->
+  <!-- [Persistence] — T1547.006 Kernel Modules and Extensions       -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190800: ESP module loaded via auditd (exploit preparation) -->
+  <rule id="190800" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key">modules</field>
+    <match>esp4|esp6</match>
+    <description>CVE-2026-43284: ESP kernel module loaded (esp4/esp6) — Dirty Frag exploit preparation</description>
+    <info type="text">Goal: Detect loading of IPsec ESP modules which are required for Dirty Frag page-cache corruption. This is the first exploit primitive in the chain.</info>
+    <info type="text">False Positives: Legitimate IPsec/VPN servers using kernel-mode ESP transforms (strongSwan, Libreswan). Negate known IPsec gateway hosts.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+      <id>T1547.006</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_kernel_module_load,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Privilege Escalation] — T1068 Exploitation for Priv Esc      -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190801: splice/vmsplice syscall from user process (exploit primitive) -->
+  <rule id="190801" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.key">splice_user</field>
+    <description>CVE-2026-43284: splice/vmsplice syscall from user process — exploit primitive detected</description>
+    <info type="text">Goal: Detect splice/vmsplice usage which is the core page-cache manipulation primitive in Dirty Frag. Low confidence alone — meaningful in chain with ESP module load.</info>
+    <info type="text">False Positives: Legitimate use of splice/sendfile in high-performance I/O applications (nginx, HAProxy, custom file servers). Volume should be low on typical servers.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_exploit_primitive,</group>
+  </rule>
+
+  <!-- Rule 190802: splice_user from temp/non-system path (high confidence, child of 190801) -->
+  <!-- NOTE: if_sid child adds audit.exe path condition (LL-11 compliant) -->
+  <rule id="190802" level="13">
+    <if_sid>190801</if_sid>
+    <field name="audit.exe" type="pcre2">^/(tmp|dev/shm|var/tmp|home)/</field>
+    <description>CVE-2026-43284: splice/vmsplice from non-system path — high confidence exploit indicator</description>
+    <info type="text">Goal: splice from temp/user directory = likely compiled exploit binary. Legitimate splice users live in /usr/bin or /usr/sbin (nginx, haproxy).</info>
+    <info type="text">False Positives: Developer testing splice-based applications in home directory. Extremely rare in production environments.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_exploit_primitive,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Credential Access] — T1548.001 Setuid/Setgid Abuse           -->
+  <!-- NOTE: FIM detection — guaranteed fire on ALL Linux agents     -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190803: SUID binary modified via page-cache corruption (confirmed exploitation) -->
+  <rule id="190803" level="15">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/usr/bin/(su|sudo|passwd|mount|pkexec|newgrp|chsh|chfn|gpasswd)$</field>
+    <field name="syscheck.event">modified</field>
+    <description>CVE-2026-43284: Critical SUID binary modified — page-cache corruption confirmed</description>
+    <info type="text">Goal: Detect modification of SUID binaries which is the exploitation outcome of Dirty Frag. The PoC patches /usr/bin/su in page-cache to inject setuid(0)+execve("/bin/sh") shellcode.</info>
+    <info type="text">False Positives: Legitimate package updates (apt/yum/dnf). Verify timing against patch windows and correlate with module load signals.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+      <id>T1548.001</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_exploit_primitive,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Defense Evasion] — T1562.001 Impair Defenses                 -->
+  <!-- NOTE: FIM detection — guaranteed fire on ALL Linux agents     -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190804: Dirty Frag mitigation config deleted (defense evasion) -->
+  <rule id="190804" level="14">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/etc/modprobe\.d/(dirtyfrag|copyfail|blacklist-esp|blacklist-rxrpc)\.conf$</field>
+    <field name="syscheck.event">deleted</field>
+    <description>CVE-2026-43284: Dirty Frag mitigation config deleted — defense evasion attempt</description>
+    <info type="text">Goal: Detect removal of modprobe blacklist that prevents ESP/RxRPC module loading. Attackers remove this to re-enable the exploit path after mitigation is applied.</info>
+    <info type="text">False Positives: Admin intentionally removing mitigation after kernel patching. Verify kernel version is patched before dismissing.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_defense_evasion_config,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Credential Access] — T1556.003 Modify Auth Process           -->
+  <!-- NOTE: FIM detection — guaranteed fire on ALL Linux agents     -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190805: /etc/passwd or /etc/shadow modified (page-cache corruption target) -->
+  <rule id="190805" level="15">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/etc/(passwd|shadow)$</field>
+    <field name="syscheck.event">modified</field>
+    <description>CVE-2026-43284: /etc/passwd or /etc/shadow modified — possible page-cache credential corruption</description>
+    <info type="text">Goal: Detect page-cache corruption targeting credential files. Dirty Frag can target any page-cache-backed file; /etc/passwd is a high-value alternative to SUID binary patching for gaining root access.</info>
+    <info type="text">False Positives: Legitimate user/password management (useradd, passwd command, LDAP sync). Correlate with module load and splice signals for confirmation.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1556.003</id>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_credential_file_access,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Persistence] — T1547.006 Kernel Module Load (syslog)         -->
+  <!-- NOTE: Syslog detection — guaranteed fire on ALL Linux agents  -->
+  <!--       No auditd dependency — fallback for agents without it   -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190806: ESP module load detected in kernel syslog -->
+  <rule id="190806" level="10">
+    <if_group>syslog</if_group>
+    <program_name>kernel</program_name>
+    <match>esp4|esp6</match>
+    <description>CVE-2026-43284: ESP module load detected in kernel log — Dirty Frag preparation (syslog fallback)</description>
+    <info type="text">Goal: Syslog-based detection of ESP module loading. Works without auditd. Provides guaranteed detection on all Linux agents regardless of audit configuration.</info>
+    <info type="text">False Positives: IPsec tunnel establishment on VPN gateways. Normal on hosts running strongSwan/Libreswan/racoon.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1547.006</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_kernel_module_load,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Privilege Escalation] — T1548.003 su/sudo (context marker)   -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190807: su execution — context marker for exploit chain -->
+  <rule id="190807" level="1">
+    <if_group>audit</if_group>
+    <field name="audit.key">priv_esc</field>
+    <field name="audit.exe" type="pcre2">/su$</field>
+    <description>CVE-2026-43284: su execution detected — context marker for exploit chain</description>
+    <info type="text">Goal: Track su execution as context marker. Only meaningful when correlated with ESP module load or splice signals. After page-cache corruption, attacker runs modified /usr/bin/su to get root shell.</info>
+    <info type="text">False Positives: Normal admin activity. This rule is level 1 (context only) — does not generate standalone alert.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1548.003</id>
+    </mitre>
+    <group>cve_2026_43284_context,ttp_priv_esc_su_sudo,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Discovery] — T1082+T1087.001 Recon (context marker)          -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190808: Recon commands — context marker for post-exploitation -->
+  <rule id="190808" level="1">
+    <if_group>audit</if_group>
+    <field name="audit.key">recon</field>
+    <!-- EXCLUDE: known automation/monitoring tools that run recon regularly -->
+    <field name="audit.exe" type="pcre2" negate="yes">^/usr/(sbin|bin|lib)/(ansible|puppet|chef|salt|zabbix|nagios|datadog)</field>
+    <description>CVE-2026-43284: Recon command executed — post-exploitation context marker</description>
+    <info type="text">Goal: Track individual recon commands (whoami, id, hostname, uname) as context markers. Only meaningful when clustered or correlated with exploit signals.</info>
+    <info type="text">False Positives: Normal admin troubleshooting, monitoring agents, configuration management tools (negated above). Level 1 — no standalone alert.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1082</id>
+      <id>T1087.001</id>
+    </mitre>
+    <group>cve_2026_43284_context,ttp_recon_burst,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Execution] — T1059.004 Unix Shell (AF_ALG crypto socket)    -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190810: AF_ALG crypto socket created (exploit crypto primitive) -->
+  <rule id="190810" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.key">af_alg</field>
+    <description>CVE-2026-43284: AF_ALG crypto socket created — exploit cipher primitive</description>
+    <info type="text">Goal: Detect AF_ALG socket creation used to set up attacker-controlled cipher for ESP in-place decryption. This is the crypto setup step before page-cache corruption.</info>
+    <info type="text">False Positives: Userspace crypto benchmarks (cryptsetup benchmark), dm-crypt setup. Rare on typical servers. Correlate with ESP module load.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_exploit_primitive,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Defense Evasion] — T1620 Reflective Code Loading            -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190811: Anonymous in-memory file created (fileless execution) -->
+  <rule id="190811" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key">anon_file_create</field>
+    <description>CVE-2026-43284: Anonymous memory file created via memfd_create — possible fileless exploit payload</description>
+    <info type="text">Goal: Detect memfd_create usage for fileless execution. Advanced exploit variants use anonymous memory files to stage shellcode without touching disk, evading FIM and static analysis.</info>
+    <info type="text">False Positives: Some runtimes (JVM, Chromium, pulseaudio) use memfd for shared memory. Low volume on servers. Correlate with splice/module load signals.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1620</id>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_defense_evasion_fileless,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Resource Development] — T1587.001 Develop Capabilities      -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190812: Exploit compilation from temporary directory -->
+  <rule id="190812" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">^/usr/(bin|lib)/(gcc|g\+\+|cc|clang)</field>
+    <field name="audit.cwd" type="pcre2">^/(tmp|dev/shm|var/tmp|home/)</field>
+    <description>CVE-2026-43284: Compiler executed from temporary/user directory — possible exploit compilation</description>
+    <info type="text">Goal: Detect exploit source code compilation in suspicious locations. The DirtyFrag PoC requires gcc compilation (gcc -O0 -Wall -o exp exp.c -lutil). Compiling in /tmp or /home is a strong indicator of ad-hoc exploit preparation.</info>
+    <info type="text">False Positives: Developers compiling in home directories (dev/test servers). Rare on production servers. Correlate with subsequent splice/module signals.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1587.001</id>
+      <id>T1068</id>
+    </mitre>
+    <group>cve_2026_43284_signals,ttp_exploit_compilation,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Correlation] — Multi-Signal Attack Chain                     -->
+  <!--                                                               -->
+  <!--  CORRELATION FIELD: agent.name (endpoint CVE, no srcip in    -->
+  <!--  auditd/FIM events — srcip not decoded for local exploits)   -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190809: Dirty Frag exploitation chain confirmed (3+ signals from same host) -->
+  <rule id="190809" level="16" frequency="3" timeframe="120">
+    <if_matched_group>cve_2026_43284_signals</if_matched_group>
+    <same_field>agent.name</same_field>
+    <description>CVE-2026-43284: Dirty Frag exploitation chain confirmed (3+ signals in 120s from same host)</description>
+    <info type="text">Goal: Fire when 3+ independent exploit signals (module load + splice + FIM change) appear from same host within 120 seconds = confirmed exploitation chain. Immediate incident response required.</info>
+    <info type="text">False Positives: Extremely unlikely — requires multiple independent signals from different data sources converging. Investigate immediately as confirmed compromise.</info>
+    <info type="cve">CVE-2026-43284</info>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>exploit_chain,privilege_escalation,confirmed_compromise,</group>
+  </rule>
+
+</group>

@@ -1,0 +1,164 @@
+<group name="dirty_frag,cve_2026_43500,privilege_escalation,custom-rules,">
+
+  <!-- ================================================================== -->
+  <!--                                                                    -->
+  <!--  [CVE-2026-43500] — Dirty Frag: RxRPC Page-Cache Write LPE        -->
+  <!--                                                                    -->
+  <!--  CVSS:    7.8 HIGH  AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H         -->
+  <!--  CWE:     CWE-787   Out-of-bounds Write                           -->
+  <!--  Patch:   2026-05-07 (mainline, NVD entry pending)                -->
+  <!--  Status:  Actively exploited (part of Dirty Frag PoC chain)       -->
+  <!--                                                                    -->
+  <!--  [References]                                                      -->
+  <!--    NVD:      https://nvd.nist.gov/vuln/detail/CVE-2026-43500      -->
+  <!--    Advisory: https://access.redhat.com/security/vulnerabilities/RHSB-2026-003 -->
+  <!--    Analysis: https://www.wiz.io/blog/dirty-frag-linux-kernel-local-privilege-escalation-via-esp-and-rxrpc -->
+  <!--    Detection:https://www.sysdig.com/blog/dirty-frag-cve-2026-43284-and-cve-2026-43500 -->
+  <!--    PoC:      https://github.com/V4bel/dirtyfrag                   -->
+  <!--                                                                    -->
+  <!--  [Affected]                                                        -->
+  <!--    Linux kernel with AF_RXRPC support (rxrpc.ko, 2023+)           -->
+  <!--    Ubuntu default kernels (rxrpc.ko ships in default package)     -->
+  <!--    Architectures: x86_64, ARM64                                    -->
+  <!--                                                                    -->
+  <!--  [MITRE ATT&CK] (ordered by kill chain)                            -->
+  <!--                                                                    -->
+  <!--    [Privilege Escalation]                                          -->
+  <!--      T1068      Exploitation for Privilege Escalation              -->
+  <!--      T1548.001  Abuse Elevation: Setuid and Setgid                -->
+  <!--                                                                    -->
+  <!--    [Persistence]                                                   -->
+  <!--      T1547.006  Boot/Logon: Kernel Modules and Extensions         -->
+  <!--                                                                    -->
+  <!--    [Defense Evasion]                                               -->
+  <!--      T1562.001  Impair Defenses: Disable or Modify Tools          -->
+  <!--                                                                    -->
+  <!--  [Kill Chain]                                                      -->
+  <!--    1. Open AF_RXRPC socket (autoloads rxrpc.ko module)            -->
+  <!--    2. Register rxkad session key via add_key("rxrpc")             -->
+  <!--    3. Obtain splice write primitive into page-cache fragment       -->
+  <!--    4. Corrupt SUID binary (/usr/bin/su) in page-cache             -->
+  <!--    5. Execute corrupted binary -> root shell                      -->
+  <!--                                                                    -->
+  <!--  [Detection Scope]                                                 -->
+  <!--    Preparation:       RxRPC module load (auditd + syslog)         -->
+  <!--    Post-exploitation: SUID binary modified (FIM)                  -->
+  <!--                       Mitigation config deleted (FIM)             -->
+  <!--    Correlation:       2+ signals in 120s from same host           -->
+  <!--                                                                    -->
+  <!--  Rule IDs:  190900-190904  (5 rules: 4 atomic + 1 correlation)   -->
+  <!--  Sources:   auditd, syslog, FIM (syscheck)                       -->
+  <!--                                                                    -->
+  <!--  [Dependencies]                                                    -->
+  <!--    Auditd rule (190900): requires deployed audit.rules baseline   -->
+  <!--      with key: modules                                            -->
+  <!--    FIM rules (190902-190903): require syscheck monitoring of      -->
+  <!--      /usr/bin/, /etc/modprobe.d/                                  -->
+  <!--    Syslog rule (190901): no dependency (always available)         -->
+  <!--                                                                    -->
+  <!-- ================================================================== -->
+
+  <!-- ============================================================ -->
+  <!-- [Persistence] — T1547.006 Kernel Modules and Extensions       -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190900: RxRPC module loaded via auditd (exploit preparation) -->
+  <rule id="190900" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key">modules</field>
+    <match>rxrpc</match>
+    <description>CVE-2026-43500: RxRPC kernel module loaded — Dirty Frag RxRPC exploit preparation</description>
+    <info type="text">Goal: Detect loading of rxrpc module required for the RxRPC variant of Dirty Frag. AF_RXRPC has no legitimate userspace consumers outside AFS filesystem daemons — module load is inherently suspicious on non-AFS hosts.</info>
+    <info type="text">False Positives: AFS client/server daemons (openafs-client, kaserver). Extremely rare on typical servers outside academic/research environments.</info>
+    <info type="cve">CVE-2026-43500</info>
+    <mitre>
+      <id>T1068</id>
+      <id>T1547.006</id>
+    </mitre>
+    <group>cve_2026_43500_signals,ttp_kernel_module_load,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Persistence] — T1547.006 Kernel Module Load (syslog)         -->
+  <!-- NOTE: Syslog detection — guaranteed fire on ALL Linux agents  -->
+  <!--       No auditd dependency — fallback for agents without it   -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190901: RxRPC module load detected in kernel syslog -->
+  <rule id="190901" level="10">
+    <if_group>syslog</if_group>
+    <program_name>kernel</program_name>
+    <match>rxrpc</match>
+    <description>CVE-2026-43500: RxRPC module load detected in kernel log — Dirty Frag preparation (syslog fallback)</description>
+    <info type="text">Goal: Syslog-based detection of RxRPC module loading. Works without auditd. RxRPC has almost no legitimate use outside AFS environments — loading it is a strong exploit indicator.</info>
+    <info type="text">False Positives: AFS infrastructure (openafs). Practically zero on non-AFS hosts. If AFS is in use, whitelist the specific host.</info>
+    <info type="cve">CVE-2026-43500</info>
+    <mitre>
+      <id>T1547.006</id>
+    </mitre>
+    <group>cve_2026_43500_signals,ttp_kernel_module_load,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Credential Access] — T1548.001 Setuid/Setgid Abuse           -->
+  <!-- NOTE: FIM detection — guaranteed fire on ALL Linux agents     -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190902: SUID binary modified via page-cache corruption -->
+  <rule id="190902" level="15">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/usr/bin/(su|sudo|passwd|mount|pkexec|newgrp|chsh|chfn|gpasswd)$</field>
+    <field name="syscheck.event">modified</field>
+    <description>CVE-2026-43500: Critical SUID binary modified — RxRPC page-cache corruption confirmed</description>
+    <info type="text">Goal: Detect modification of SUID binaries via RxRPC page-cache write primitive. Same exploitation outcome as ESP variant (CVE-2026-43284) but through AF_RXRPC kernel path.</info>
+    <info type="text">False Positives: Legitimate package updates (apt/yum/dnf). Correlate with rxrpc module load signal for confirmation.</info>
+    <info type="cve">CVE-2026-43500</info>
+    <mitre>
+      <id>T1068</id>
+      <id>T1548.001</id>
+    </mitre>
+    <group>cve_2026_43500_signals,ttp_exploit_primitive,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Defense Evasion] — T1562.001 Impair Defenses                 -->
+  <!-- NOTE: FIM detection — guaranteed fire on ALL Linux agents     -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190903: Dirty Frag mitigation config deleted (defense evasion) -->
+  <rule id="190903" level="14">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path" type="pcre2">^/etc/modprobe\.d/(dirtyfrag|copyfail|blacklist-esp|blacklist-rxrpc)\.conf$</field>
+    <field name="syscheck.event">deleted</field>
+    <description>CVE-2026-43500: Dirty Frag mitigation config deleted — defense evasion attempt</description>
+    <info type="text">Goal: Detect removal of modprobe blacklist that prevents rxrpc module loading. Attackers remove this to re-enable the RxRPC exploit path after mitigation is applied.</info>
+    <info type="text">False Positives: Admin intentionally removing mitigation after kernel patching. Verify kernel version is patched before dismissing.</info>
+    <info type="cve">CVE-2026-43500</info>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+    <group>cve_2026_43500_signals,ttp_defense_evasion_config,</group>
+  </rule>
+
+  <!-- ============================================================ -->
+  <!-- [Correlation] — Multi-Signal Attack Chain                     -->
+  <!--                                                               -->
+  <!--  CORRELATION FIELD: agent.name (endpoint CVE, no srcip in    -->
+  <!--  auditd/FIM events — srcip not decoded for local exploits)   -->
+  <!-- ============================================================ -->
+
+  <!-- Rule 190904: Dirty Frag RxRPC exploitation chain (2+ signals from same host) -->
+  <rule id="190904" level="16" frequency="2" timeframe="120">
+    <if_matched_group>cve_2026_43500_signals</if_matched_group>
+    <same_field>agent.name</same_field>
+    <description>CVE-2026-43500: Dirty Frag RxRPC exploitation chain confirmed (2+ signals in 120s from same host)</description>
+    <info type="text">Goal: Fire when 2+ independent exploit signals (rxrpc module load + SUID binary modification) appear from same host = confirmed RxRPC exploitation path. Immediate incident response required.</info>
+    <info type="text">False Positives: Extremely unlikely — requires rxrpc module load AND SUID binary modification converging from same host. Investigate immediately as confirmed compromise.</info>
+    <info type="cve">CVE-2026-43500</info>
+    <mitre>
+      <id>T1068</id>
+    </mitre>
+    <group>exploit_chain,privilege_escalation,confirmed_compromise,</group>
+  </rule>
+
+</group>
