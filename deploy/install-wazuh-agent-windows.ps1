@@ -60,6 +60,267 @@ function Write-Info($msg) {
     Write-Host "  $msg" -ForegroundColor Cyan
 }
 
+# =============================================================================
+# LOG COLLECTION FUNCTIONS
+# =============================================================================
+
+function Get-LogBlock {
+    param([string[]]$Channels)
+    $xml = ""
+    foreach ($ch in $Channels) {
+        $xml += @"
+
+  <localfile>
+    <location>$ch</location>
+    <log_format>eventchannel</log_format>
+  </localfile>
+"@
+    }
+    return $xml
+}
+
+function Add-LogChannels {
+    param([string]$ConfPath, [string[]]$Channels, [string]$Label)
+    $block = "`n  <!-- ========== SMART: $Label ========== -->"
+    $block += Get-LogBlock -Channels $Channels
+    $content = Get-Content -Path $ConfPath -Raw
+    $content = $content -replace "</ossec_config>", "$block`n`n</ossec_config>"
+    Set-Content -Path $ConfPath -Value $content -Encoding UTF8
+    Write-OK "$Label — $($Channels.Count) channels enabled."
+}
+
+function Configure-LogCollection {
+    param([string]$ConfPath)
+
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  LOG COLLECTION MODE" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  1) Template  - Default channels saja (Sysmon, Security, dll)"
+    Write-Host "  2) All       - Enable semua commented channels"
+    Write-Host "  3) Auto      - Detect installed roles & enable matching"
+    Write-Host "  4) Custom    - Pilih kategori manual"
+    Write-Host ""
+    $mode = Read-Host "Pilih mode [1-4, default=1]"
+    if ([string]::IsNullOrEmpty($mode)) { $mode = "1" }
+
+    switch ($mode) {
+        "2" { LogCollect-All -ConfPath $ConfPath }
+        "3" { LogCollect-AutoDetect -ConfPath $ConfPath }
+        "4" { LogCollect-Custom -ConfPath $ConfPath }
+        default { Write-OK "Template mode — default channels only." }
+    }
+}
+
+function LogCollect-All {
+    param([string]$ConfPath)
+    # Uncomment ALL commented <localfile> blocks
+    $content = Get-Content -Path $ConfPath -Raw
+    # Remove XML comment markers around localfile blocks
+    $pattern = '<!--\s*((?:<localfile>[\s\S]*?</localfile>\s*)+)\s*-->'
+    $content = [regex]::Replace($content, $pattern, '$1')
+    Set-Content -Path $ConfPath -Value $content -Encoding UTF8
+    Write-OK "All mode — semua commented channels di-enable."
+    Write-Warn "Volume bisa tinggi! Monitor event/sec di manager."
+}
+
+function LogCollect-AutoDetect {
+    param([string]$ConfPath)
+    $detected = @()
+
+    Write-Info "Scanning installed roles & features..."
+
+    # Check for Windows Server roles (Get-WindowsFeature only on Server OS)
+    $isServer = (Get-CimInstance Win32_OperatingSystem).ProductType -ne 1
+
+    if ($isServer) {
+        try {
+            $features = Get-WindowsFeature -ErrorAction SilentlyContinue | Where-Object { $_.Installed }
+            $featureNames = $features.Name
+
+            # DHCP Server
+            if ($featureNames -contains "DHCP") {
+                Write-Info "[+] DHCP Server detected"
+                $detected += "DhcpAdminEvents"
+                $detected += "Microsoft-Windows-Dhcp-Server/Operational"
+            }
+
+            # AD Certificate Services
+            if ($featureNames -contains "ADCS-Cert-Authority" -or $featureNames -contains "AD-Certificate") {
+                Write-Info "[+] AD Certificate Services detected"
+                $detected += "Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational"
+            }
+
+            # File Server / SMB
+            if ($featureNames -contains "FS-FileServer") {
+                Write-Info "[+] File Server role detected"
+                $detected += "Microsoft-Windows-SMBServer/Operational"
+            }
+
+            # ADFS
+            if ($featureNames -contains "ADFS-Federation") {
+                Write-Info "[+] AD FS detected"
+                $detected += "AD FS/Admin"
+            }
+
+            # DFS Replication
+            if ($featureNames -contains "FS-DFS-Replication") {
+                Write-Info "[+] DFS Replication detected"
+                $detected += "DFS Replication"
+            }
+
+            # NPS / RADIUS
+            if ($featureNames -contains "NPAS") {
+                Write-Info "[+] Network Policy Server detected"
+                $detected += "Microsoft-Windows-NetworkPolicy/Operational"
+            }
+
+            # Hyper-V
+            if ($featureNames -contains "Hyper-V") {
+                Write-Info "[+] Hyper-V detected"
+                $detected += "Microsoft-Windows-Hyper-V-VMMS-Admin"
+            }
+
+            # IIS
+            if ($featureNames -contains "Web-Server") {
+                Write-Info "[+] IIS Web Server detected"
+                $detected += "Microsoft-Windows-IIS-Logging/Operational"
+            }
+        } catch {
+            Write-Warn "Get-WindowsFeature gagal: $($_.Exception.Message)"
+        }
+    }
+
+    # Universal checks (works on workstation + server)
+    # Print Spooler running = PrintNightmare risk
+    $spooler = Get-Service -Name "Spooler" -ErrorAction SilentlyContinue
+    if ($spooler -and $spooler.Status -eq "Running") {
+        Write-Info "[+] Print Spooler running (PrintNightmare risk)"
+        # Already in template, just note it
+    }
+
+    # WinRM enabled
+    $winrm = Get-Service -Name "WinRM" -ErrorAction SilentlyContinue
+    if ($winrm -and $winrm.Status -eq "Running") {
+        Write-Info "[+] WinRM active — lateral movement channel already in template"
+    }
+
+    # Docker
+    $docker = Get-Service -Name "docker" -ErrorAction SilentlyContinue
+    if ($docker) {
+        Write-Info "[+] Docker detected"
+        $detected += "Microsoft-Windows-Containers-Wcifs/Operational"
+    }
+
+    # AppLocker (check if policies exist)
+    $applockerPolicy = Get-ChildItem "HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2" -ErrorAction SilentlyContinue
+    if ($applockerPolicy) {
+        Write-Info "[+] AppLocker policies detected"
+        $detected += "Microsoft-Windows-AppLocker/EXE and DLL"
+        $detected += "Microsoft-Windows-AppLocker/MSI and Script"
+    }
+
+    if ($detected.Count -gt 0) {
+        Add-LogChannels -ConfPath $ConfPath -Channels $detected -Label "Auto-detected roles"
+    } else {
+        Write-OK "No additional roles detected — template is sufficient."
+    }
+}
+
+function LogCollect-Custom {
+    param([string]$ConfPath)
+    $selected = @()
+
+    Write-Host ""
+    Write-Host "Pilih kategori (pisah koma, contoh: 1,3,5):" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "   1) DHCP Server        - IP-MAC leases, rogue device"
+    Write-Host "   2) AD Cert Services   - ESC1-ESC8, certifried"
+    Write-Host "   3) File Server / SMB  - Share access tracking"
+    Write-Host "   4) AD FS              - Golden SAML, federation"
+    Write-Host "   5) DFS Replication    - Multi-DC SYSVOL sync"
+    Write-Host "   6) NPS / RADIUS       - Network auth"
+    Write-Host "   7) Hyper-V            - VM management events"
+    Write-Host "   8) IIS Web Server     - Web request logging"
+    Write-Host "   9) Docker/Container   - Container lifecycle"
+    Write-Host "  10) AppLocker          - Application whitelist"
+    Write-Host "  11) DNS Client         - DNS query logging"
+    Write-Host "  12) SMB Client         - Outbound SMB (lateral movement)"
+    Write-Host "  13) KDC Operational    - Kerberos Key Distribution"
+    Write-Host ""
+    $choices = Read-Host "Kategori"
+
+    $cats = $choices -split "," | ForEach-Object { $_.Trim() }
+    foreach ($c in $cats) {
+        switch ($c) {
+            "1" {
+                $selected += "DhcpAdminEvents"
+                $selected += "Microsoft-Windows-Dhcp-Server/Operational"
+                Write-Info "[+] DHCP Server"
+            }
+            "2" {
+                $selected += "Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational"
+                Write-Info "[+] AD Certificate Services"
+            }
+            "3" {
+                $selected += "Microsoft-Windows-SMBServer/Operational"
+                Write-Info "[+] File Server / SMB"
+            }
+            "4" {
+                $selected += "AD FS/Admin"
+                Write-Info "[+] AD FS"
+            }
+            "5" {
+                $selected += "DFS Replication"
+                Write-Info "[+] DFS Replication"
+            }
+            "6" {
+                $selected += "Microsoft-Windows-NetworkPolicy/Operational"
+                Write-Info "[+] NPS / RADIUS"
+            }
+            "7" {
+                $selected += "Microsoft-Windows-Hyper-V-VMMS-Admin"
+                Write-Info "[+] Hyper-V"
+            }
+            "8" {
+                $selected += "Microsoft-Windows-IIS-Logging/Operational"
+                Write-Info "[+] IIS"
+            }
+            "9" {
+                $selected += "Microsoft-Windows-Containers-Wcifs/Operational"
+                Write-Info "[+] Docker/Container"
+            }
+            "10" {
+                $selected += "Microsoft-Windows-AppLocker/EXE and DLL"
+                $selected += "Microsoft-Windows-AppLocker/MSI and Script"
+                Write-Info "[+] AppLocker"
+            }
+            "11" {
+                $selected += "Microsoft-Windows-DNS-Client/Operational"
+                Write-Info "[+] DNS Client"
+            }
+            "12" {
+                $selected += "Microsoft-Windows-SMBClient/Operational"
+                Write-Info "[+] SMB Client"
+            }
+            "13" {
+                $selected += "Microsoft-Windows-Kerberos-Key-Distribution-Center/Operational"
+                Write-Info "[+] KDC Operational"
+            }
+            default {
+                Write-Warn "Kategori '$c' tidak dikenal — skip"
+            }
+        }
+    }
+
+    if ($selected.Count -gt 0) {
+        Add-LogChannels -ConfPath $ConfPath -Channels $selected -Label "Custom selection"
+    } else {
+        Write-OK "No categories selected — using template."
+    }
+}
+
 # Start transcript
 Start-Transcript -Path $LogFile -Append | Out-Null
 
@@ -225,6 +486,30 @@ if (Test-Path $ConfSrc) {
     Set-Content -Path $ConfDst -Value $Content -Encoding UTF8
 
     Write-OK "ossec.conf deployed (type=$AgentType, manager=$ManagerIP)."
+
+    # Test connectivity to manager
+    Write-Info "Testing koneksi ke manager..."
+    try {
+        $tcp1514 = Test-NetConnection -ComputerName $ManagerIP -Port 1514 -WarningAction SilentlyContinue
+        if ($tcp1514.TcpTestSucceeded) {
+            Write-OK "Port 1514 reachable."
+        } else {
+            Write-Warn "Port 1514 tidak reachable. Cek cloud firewall."
+        }
+        $tcp1515 = Test-NetConnection -ComputerName $ManagerIP -Port 1515 -WarningAction SilentlyContinue
+        if ($tcp1515.TcpTestSucceeded) {
+            Write-OK "Port 1515 reachable (auto-enrollment OK)."
+        } else {
+            Write-Warn "Port 1515 tidak reachable — auto-enrollment mungkin gagal."
+            Write-Info "Fallback: manual register via manage_agents."
+        }
+    } catch {
+        Write-Warn "Connectivity check gagal: $($_.Exception.Message)"
+    }
+
+    # Smart log collection configuration
+    Configure-LogCollection -ConfPath $ConfDst
+
 } else {
     Write-Warn "Config file tidak ditemukan: $ConfSrc"
     Write-Info "Konfigurasi manager IP manual di $ConfDst"

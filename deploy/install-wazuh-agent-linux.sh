@@ -48,6 +48,382 @@ NC='\033[0m'
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# =============================================================================
+# LOG COLLECTION FUNCTIONS
+# =============================================================================
+
+# Helper: append XML block before </ossec_config>
+append_log_block() {
+    local CONF="$1" BLOCK="$2"
+    sed -i '/<\/ossec_config>/d' "$CONF"
+    printf '%s\n' "$BLOCK" >> "$CONF"
+    echo "" >> "$CONF"
+    echo "</ossec_config>" >> "$CONF"
+}
+
+# Mode 2: Wildcard — kirim semua /var/log/
+log_collect_wildcard() {
+    local CONF="$1"
+    append_log_block "$CONF" "$(cat <<'XML'
+
+  <!-- ========== WILDCARD: All logs ========== -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/*.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/*/*.log</location>
+  </localfile>
+XML
+)"
+    echo -e "${GREEN}[OK] Wildcard mode — /var/log/*.log + /var/log/*/*.log enabled.${NC}"
+}
+
+# Mode 3: Auto-detect — scan /var/log, enable yang ditemukan
+log_collect_autodetect() {
+    local CONF="$1"
+    local TMPFILE="/tmp/wazuh-autodetect.xml"
+    local FOUND=0
+    echo "  <!-- ========== AUTO-DETECTED LOGS ========== -->" > "$TMPFILE"
+    echo -e "${CYAN}Scanning /var/log & known service paths...${NC}"
+
+    # Known service targets: format|path|label
+    local TARGETS=(
+        "apache|/var/log/apache2/access.log|Apache access"
+        "apache|/var/log/apache2/error.log|Apache error"
+        "apache|/var/log/httpd/access_log|Apache access (RHEL)"
+        "apache|/var/log/httpd/error_log|Apache error (RHEL)"
+        "syslog|/var/log/nginx/access.log|Nginx access"
+        "syslog|/var/log/nginx/error.log|Nginx error"
+        "syslog|/usr/local/lsws/logs/error.log|LiteSpeed error"
+        "apache|/usr/local/lsws/logs/access.log|LiteSpeed access"
+        "syslog|/usr/local/cpanel/logs/access_log|cPanel access"
+        "syslog|/usr/local/cpanel/logs/error_log|cPanel error"
+        "syslog|/usr/local/cpanel/logs/login_log|cPanel login"
+        "syslog|/var/log/chkservd.log|cPanel chkservd"
+        "syslog|/var/log/modsec_audit.log|ModSecurity"
+        "syslog|/var/log/mysql/error.log|MySQL"
+        "syslog|/var/log/postgresql/postgresql-main.log|PostgreSQL"
+        "syslog|/var/log/mongodb/mongod.log|MongoDB"
+        "syslog|/var/log/mail.log|Mail"
+        "syslog|/var/log/exim4/mainlog|Exim"
+        "syslog|/var/log/dovecot.log|Dovecot"
+        "syslog|/var/log/vsftpd.log|vsftpd"
+        "syslog|/var/log/proftpd/proftpd.log|ProFTPD"
+        "syslog|/var/log/pure-ftpd/transfer.log|Pure-FTPd"
+        "syslog|/var/log/docker.log|Docker"
+        "syslog|/var/log/ufw.log|UFW"
+        "syslog|/var/log/fail2ban.log|Fail2ban"
+        "json|/var/log/suricata/eve.json|Suricata"
+        "syslog|/var/log/snort/alert|Snort"
+        "syslog|/var/log/openvpn/openvpn.log|OpenVPN"
+        "syslog|/var/log/squid/access.log|Squid"
+        "syslog|/var/log/plesk/panel.log|Plesk"
+        "syslog|/opt/webmin/miniserv.log|Webmin"
+        "syslog|/var/log/secure|RHEL secure"
+        "syslog|/var/log/messages|RHEL messages"
+        "syslog|/var/log/sysmon.log|Sysmon Linux"
+    )
+
+    for target in "${TARGETS[@]}"; do
+        IFS='|' read -r fmt path label <<< "$target"
+        if [ -f "$path" ]; then
+            echo -e "  ${GREEN}[+] ${label}: ${path}${NC}"
+            cat >> "$TMPFILE" <<ENTRY
+  <localfile>
+    <log_format>${fmt}</log_format>
+    <location>${path}</location>
+  </localfile>
+ENTRY
+            ((FOUND++)) || true
+        fi
+    done
+
+    # Pick up remaining /var/log/*.log not already in base config
+    for f in /var/log/*.log; do
+        [ -f "$f" ] || continue
+        local base
+        base=$(basename "$f")
+        # Skip files already in core config or detected above
+        case "$base" in
+            syslog|auth.log|kern.log|dpkg.log|ufw.log|fail2ban.log|mail.log|docker.log|sysmon.log) continue ;;
+        esac
+        if ! grep -q "$f" "$CONF" 2>/dev/null; then
+            echo -e "  ${GREEN}[+] Extra: ${f}${NC}"
+            cat >> "$TMPFILE" <<ENTRY
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>${f}</location>
+  </localfile>
+ENTRY
+            ((FOUND++)) || true
+        fi
+    done
+
+    if [ "$FOUND" -gt 0 ]; then
+        append_log_block "$CONF" "$(cat "$TMPFILE")"
+        echo -e "${GREEN}[OK] Auto-detect: ${FOUND} additional log sources enabled.${NC}"
+    else
+        echo -e "${GREEN}[OK] No additional logs found beyond core.${NC}"
+    fi
+    rm -f "$TMPFILE"
+}
+
+# Mode 4: Custom — pilih kategori manual
+log_collect_custom() {
+    local CONF="$1"
+    local TMPFILE="/tmp/wazuh-custom-logs.xml"
+    echo "  <!-- ========== CUSTOM SELECTED LOGS ========== -->" > "$TMPFILE"
+    local SELECTED=0
+
+    echo ""
+    echo -e "${CYAN}Pilih kategori (pisah koma, contoh: 1,3,8):${NC}"
+    echo ""
+    echo "   1) Web Server    — Apache, Nginx, LiteSpeed"
+    echo "   2) cPanel / WHM"
+    echo "   3) WAF           — ModSecurity"
+    echo "   4) Database      — MySQL, PostgreSQL, MongoDB"
+    echo "   5) Mail          — mail.log, Exim, Dovecot"
+    echo "   6) FTP           — vsftpd, ProFTPD, Pure-FTPd"
+    echo "   7) Container     — Docker, Kubernetes"
+    echo "   8) Firewall/IDS  — UFW, Suricata, Snort, Fail2ban"
+    echo "   9) VPN/Proxy     — OpenVPN, Squid"
+    echo "  10) Panel         — Plesk, Webmin"
+    echo "  11) RHEL/CentOS   — secure, messages"
+    echo "  12) Sysmon Linux"
+    echo "  13) System Health  — df, netstat, last (commands)"
+    echo ""
+    read -p "Kategori: " SELECTIONS
+
+    IFS=',' read -ra CATS <<< "$SELECTIONS"
+    for c in "${CATS[@]}"; do
+        c=$(echo "$c" | tr -d ' ')
+        case "$c" in
+            1) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/var/log/apache2/access.log</location>
+  </localfile>
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/var/log/apache2/error.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/nginx/access.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/nginx/error.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/lsws/logs/error.log</location>
+  </localfile>
+  <localfile>
+    <log_format>apache</log_format>
+    <location>/usr/local/lsws/logs/access.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Web Server${NC}"; ((SELECTED++)) || true ;;
+            2) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/cpanel/logs/access_log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/cpanel/logs/error_log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/usr/local/cpanel/logs/login_log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/chkservd.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] cPanel/WHM${NC}"; ((SELECTED++)) || true ;;
+            3) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/modsec_audit.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] WAF/ModSecurity${NC}"; ((SELECTED++)) || true ;;
+            4) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/mysql/error.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/postgresql/postgresql-main.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/mongodb/mongod.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Database${NC}"; ((SELECTED++)) || true ;;
+            5) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/mail.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/exim4/mainlog</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/dovecot.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Mail Server${NC}"; ((SELECTED++)) || true ;;
+            6) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/vsftpd.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/proftpd/proftpd.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/pure-ftpd/transfer.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] FTP${NC}"; ((SELECTED++)) || true ;;
+            7) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/docker.log</location>
+  </localfile>
+  <localfile>
+    <log_format>json</log_format>
+    <location>/var/log/containers/*.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Container${NC}"; ((SELECTED++)) || true ;;
+            8) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/ufw.log</location>
+  </localfile>
+  <localfile>
+    <log_format>json</log_format>
+    <location>/var/log/suricata/eve.json</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/snort/alert</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/fail2ban.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Firewall/IDS${NC}"; ((SELECTED++)) || true ;;
+            9) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/openvpn/openvpn.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/squid/access.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] VPN/Proxy${NC}"; ((SELECTED++)) || true ;;
+            10) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/plesk/panel.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/opt/webmin/miniserv.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Panel/Mgmt${NC}"; ((SELECTED++)) || true ;;
+            11) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/secure</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/messages</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] RHEL/CentOS${NC}"; ((SELECTED++)) || true ;;
+            12) cat >> "$TMPFILE" <<'EOF'
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/sysmon.log</location>
+  </localfile>
+EOF
+               echo -e "  ${GREEN}[+] Sysmon Linux${NC}"; ((SELECTED++)) || true ;;
+            13) cat >> "$TMPFILE" <<'CMDEOF'
+  <localfile>
+    <log_format>command</log_format>
+    <command>df -P</command>
+    <frequency>360</frequency>
+  </localfile>
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>netstat -tulpn | sed 's/\([[:alnum:]]\+\)\ \+[[:digit:]]\+\ \+[[:digit:]]\+\ \+\(.*\):\([[:digit:]]*\)\ \+\([0-9\.\:\*]\+\).\+\ \([[:digit:]]*\/[[:alnum:]\-]*\).*/\1 \2 == \3 == \4 \5/' | sort -k 4 -g | sed 's/ == \(.*\) ==/:\1/' | sed 1,2d</command>
+    <alias>netstat listening ports</alias>
+    <frequency>360</frequency>
+  </localfile>
+  <localfile>
+    <log_format>full_command</log_format>
+    <command>last -n 20</command>
+    <frequency>360</frequency>
+  </localfile>
+CMDEOF
+               echo -e "  ${GREEN}[+] System Health${NC}"; ((SELECTED++)) || true ;;
+            *) echo -e "  ${YELLOW}[?] Kategori '$c' tidak dikenal — skip${NC}" ;;
+        esac
+    done
+
+    if [ "$SELECTED" -gt 0 ]; then
+        append_log_block "$CONF" "$(cat "$TMPFILE")"
+        echo -e "${GREEN}[OK] Custom: ${SELECTED} categories enabled.${NC}"
+    else
+        echo -e "${YELLOW}[OK] No categories selected — using template.${NC}"
+    fi
+    rm -f "$TMPFILE"
+}
+
+# Main menu for log collection mode
+configure_log_collection() {
+    local CONF="$1"
+    echo ""
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  LOG COLLECTION MODE${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo ""
+    echo "  1) Template — Core logs saja (audit, syslog, auth, kern)"
+    echo "  2) All      — Wildcard /var/log/*.log (kirim semua)"
+    echo "  3) Auto     — Scan /var/log & auto-enable yang ada"
+    echo "  4) Custom   — Pilih kategori manual"
+    echo ""
+    read -p "Pilih mode [1-4, default=1]: " LOG_MODE
+    LOG_MODE=${LOG_MODE:-1}
+
+    case $LOG_MODE in
+        2) log_collect_wildcard "$CONF" ;;
+        3) log_collect_autodetect "$CONF" ;;
+        4) log_collect_custom "$CONF" ;;
+        *) echo -e "${GREEN}[OK] Template mode — core logs only.${NC}" ;;
+    esac
+}
+
 clear
 
 echo -e "${CYAN}"
@@ -317,6 +693,13 @@ if [ -f "$OSSEC_CONF_SRC" ]; then
     chmod 640 "$OSSEC_CONF_DST"
 
     echo -e "${GREEN}[OK] ossec.conf deployed (manager=${WAZUH_MANAGER}).${NC}"
+
+    # Smart log collection configuration
+    configure_log_collection "$OSSEC_CONF_DST"
+
+    # Re-apply permissions after log config changes
+    chown root:wazuh "$OSSEC_CONF_DST"
+    chmod 640 "$OSSEC_CONF_DST"
 else
     echo -e "${YELLOW}[SKIP] ossec-agent-linux.conf tidak ditemukan.${NC}"
     echo -e "${YELLOW}       Konfigurasi manager IP manual di ${OSSEC_CONF_DST}${NC}"

@@ -441,10 +441,10 @@ if [ -d "${CUSTOM_RULES_SRC}/decoders" ]; then
     done
 fi
 
-# --- 3. Base rules from deploy/rules/ (00_* files) ---
+# --- 3. Rules from deploy/rules/ (ALL xml — base 00_* + CVE dfx_* + etc) ---
 if [ -d "${SCRIPT_DIR}/rules" ]; then
-    echo -e "${CYAN}  [rules]   deploy/rules/00_* → ${RULES_DST}/${NC}"
-    for f in "${SCRIPT_DIR}/rules/"00_*.xml; do
+    echo -e "${CYAN}  [rules]   deploy/rules/*.xml → ${RULES_DST}/${NC}"
+    for f in "${SCRIPT_DIR}/rules/"*.xml; do
         [ -f "$f" ] || continue
         cp -v "$f" "$RULES_DST/"
         ((DEPLOYED++)) || true
